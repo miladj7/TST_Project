@@ -1,9 +1,11 @@
 import numpy as np
 import torch
 import torch.utils.data
+from scipy.stats import chi
 
 is_cuda = True
-
+dtype = torch.float
+device = torch.device("cuda:0")
 #i don't know what it does
 class ModelLatentF(torch.nn.Module):
     """define deep networks."""
@@ -25,6 +27,10 @@ class ModelLatentF(torch.nn.Module):
         """Forward the LeNet."""
         fealant = self.latent(input)
         return fealant
+
+    
+def mem_ratio():
+    print(torch.cuda.memory_allocated() / torch.cuda.memory_reserved())
 
 def get_item(x, is_cuda):
     """get the numpy value from a torch tensor."""
@@ -122,16 +128,26 @@ def h1_mean_var_gram(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gamma=2):
         print('error!!'+str(V1))
     return mmd2, varEst, Kxyxy
 
-
 def get_l(n,gamma):
-    return int(round(0.5*(size**self.gamma-(self.gamma-1)*size),0))
+    # return int(round(0.5*(n**gamma-(gamma-1)*n),0))
+    return int(round(n**gamma,0))
 
 def get_weights(n, gamma):
-    l = get_l(n,gamma)
-    D = get_pairs(n)
-    D = D[np.random.choice(range(len(D)), l, replace=True)]
-    N = torch.zeros(n, n, dtype=dtype)
-    N[D[:,0], D[:,1]] += 1
+    I = np.eye(n)
+    if gamma == 2:
+        N = torch.ones(n,n)-I
+    elif gamma == 1:
+        n2 = int(n / 2)
+        N = torch.zeros(n, n, dtype=dtype)
+        N[np.arange(n2), np.arange(n2) + n2] += 1
+    else:
+        l = get_l(n,gamma)
+        D = get_pairs(n)
+        D = D[np.random.choice(range(len(D)), l, replace=False)]
+        N = torch.zeros(n, n, dtype=dtype)
+        N[D[:,0], D[:,1]] += 1
+        N = N-np.diag(np.diag(N))
+    
     W = N/torch.sum(N)
     return W
 
@@ -153,26 +169,40 @@ def get_coeff(n, gamma):
 
 def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gamma=2):
     """compute value of MMD and std of MMD using kernel matrix."""
-    num_kernels = Kx.shape[0]
     n = Kx.shape[1]
+    Kx = Kx.reshape(-1,n,n)
+    Ky = Ky.reshape(-1,n,n)
+    Kxy = Kxy.reshape(-1,n,n)
+    num_kernels = Kx.shape[0]
     p = n*(n-1)
     pr=n**2
-    W = get_weights(n, gamma)
-    H = torch.zeros(num_kernels, n, n)
-    H_bar = torch.zeros(num_kernels, n, n)
-    one = torch.ones(n)
-    means = torch.zeros(num_kernels, n)
+    W = get_weights(n, gamma).to(Kx)
+    # print(torch.sum(W))
+    H = torch.zeros(num_kernels, n, n).to(Kx)
+    # import IPython; IPython.embed()
+    H_bar = torch.zeros(num_kernels, n, n).to(Kx)
+    one = torch.ones(n).to(Kx)
+    means = torch.zeros(num_kernels, n).to(Kx)
     #gram are kx,ky,kxy
-    mmd = torch.zeros(num_kernels)
-    KKxyxy = torch.zeros(m,2*n,2*n)
+    mmd = torch.zeros(num_kernels).to(Kx)
+    KKxyxy = torch.zeros(num_kernels,2*n,2*n).to(Kx)
+    print("inside gram", mem_ratio())
     for u in range(num_kernels):
-        Kxxy = torch.cat((Kx[u],Kxy[u]),1)
-        Kyxy = torch.cat((Kxy[u].transpose(0,1),Ky[u]),1)
-        Kxyxy = torch.cat((Kxxy[u],Kyxy[u]),0)
-        KKxyxy[ii] = Kxyxy
+        print("loop gram", u, mem_ratio())
+        Kx_bar = Kx[u]*W
+        Ky_bar = Ky[u]*W
+        Kxy_bar = Kxy[u]*W
+        Kyx_bar = Kxy[u].transpose(0,1)*W
+        Kxxy = torch.cat((Kx_bar,Kxy_bar),1)
+        Kyxy = torch.cat((Kyx_bar,Ky_bar),1)
+        Kxyxy = torch.cat((Kxxy,Kyxy),0)
+        KKxyxy[u] = Kxyxy.cpu()
         H[u]=hh = Kx[u]+Ky[u]-Kxy[u]-Kxy[u].transpose(0,1)
         H[u].fill_diagonal_(0)
-        H_bar[u] = H[u]*W
+        H_bar[u] = Kx_bar + Ky_bar - Kxy_bar - Kyx_bar
+        H_bar[u].fill_diagonal_(0)
+        
+        # import IPython; IPython.embed()
         # is_unbiased = True
         # if is_unbiased:
         #     xx = torch.div((torch.sum(Kx[ii]) - torch.sum(torch.diag(Kx[ii]))), (n * (n - 1)))
@@ -193,17 +223,18 @@ def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gam
         # xy = torch.div(torch.sum(Kxy[u]), (pr))
         # mmd[u] = xx - 2 * xy + yy
         # mmd_c
+    print("outside gram", mem_ratio())
     mmd = torch.sum(H_bar,(1,2))
     mmd_c = torch.sum(H, (1,2))/p
     means = torch.sum(H,2)/n    
     if not is_var_computed:
-        return mmd[i], None
+        return mmd, None
     # S1 = torch.dot(hh.sum(1)/n,hh.sum(1)/n) / n - ((hh).sum() / (n) / n)**2
     # S1 = 1 / n * means.matmul(means.transpose(0, 1)) - mmd_c.view(-1, 1).matmul(mmd_c.view(1, -1))
     S1 = 1 / n * means.matmul(means.transpose(0, 1)) - mmd_c.outer(mmd_c)
     # S2 = 1 / p * (H.reshape(num_kernels, -1)).matmul((H.reshape(num_kernels, -1)).transpose(0, 1)) - mmd_c.view(-1, 1).matmul(mmd_c.view(1, -1))
     S2 = 1 / p * (H.reshape(num_kernels, -1)).matmul((H.reshape(num_kernels, -1)).transpose(0, 1)) - mmd_c.outer(mmd_c)
-    
+    # 100 x 200 x 200 
     A,B = get_coeff(n, gamma)
     V = A*S1+B*S2
     # if  varEst == 0.0:
@@ -241,34 +272,39 @@ def MMDg(Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=True, is_var_com
     # Y = Fea[len_s:, :] # fetch the sample 2 (features of deep networks)
     X_org = Fea_org[0:len_s, :] # fetch the original sample 1
     Y_org = Fea_org[len_s:, :] # fetch the original sample 2
-    Dxx_org = Pdist2(X_org, X_org)
-    Dyy_org = Pdist2(Y_org, Y_org)
-    Dxy_org = Pdist2(X_org, Y_org)
+    Dxx_org = Pdist2(X_org, X_org).cpu()
+    Dyy_org = Pdist2(Y_org, Y_org).cpu()
+    Dxy_org = Pdist2(X_org, Y_org).cpu()
     L = 1 # generalized Gaussian (if L>1)
     # Dxx = Pdist2(X, X)
     # Dyy = Pdist2(Y, Y)
     # Dxy = Pdist2(X, Y)
-    KKx=np.zeros(num_kernels,len_s,len_s)
-    KKy=np.zeros(num_kernels,len_s,len_s)
-    KKxy=np.zeros(num_kernels,len_s,len_s)
+    # print(num_kernels)
+    # print(len_s)
+    KKx=torch.zeros(num_kernels,len_s,len_s,dtype=dtype, device = 'cpu')
+    KKy=torch.zeros(num_kernels,len_s,len_s,dtype=dtype,device = 'cpu')
+    KKxy=torch.zeros(num_kernels,len_s,len_s,dtype=dtype,device = 'cpu')
+    print("inside mmdg", mem_ratio())
     for ii in range(num_kernels):
+        print("loop mmdg", ii, mem_ratio())
         X = Fea[ii][0:len_s, :]  # fetch the sample 1 (features of deep networks)
         Y = Fea[ii][len_s:, :]  # fetch the sample 2 (features of deep networks)
-        Dxx = Pdist2(X, X)
-        Dyy = Pdist2(Y, Y)
-        Dxy = Pdist2(X, Y)
+        Dxx = Pdist2(X, X).cpu()
+        Dyy = Pdist2(Y, Y).cpu()
+        Dxy = Pdist2(X, Y).cpu()
 
         if is_smooth:
-            Kx = (1.0-epsilon[ii]) * torch.exp(-(Dxx / sigma0[ii]) - (Dxx_org / sigma[ii])) + epsilon[ii] * torch.exp(-Dxx_org / sigma[ii])
-            Ky = (1.0-epsilon[ii]) * torch.exp(-(Dyy / sigma0[ii]) - (Dyy_org / sigma[ii])) + epsilon[ii] * torch.exp(-Dyy_org / sigma[ii])
-            Kxy = (1.0-epsilon[ii]) * torch.exp(-(Dxy / sigma0[ii]) - (Dxy_org / sigma[ii])) + epsilon[ii] * torch.exp(-Dxy_org / sigma[ii])
+            Kx = (1.0-epsilon[ii].cpu()) * torch.exp(-(Dxx / sigma0[ii].cpu()) - (Dxx_org / sigma[ii].cpu())) + epsilon[ii].cpu() * torch.exp(-Dxx_org / sigma[ii].cpu())
+            Ky = (1.0-epsilon[ii].cpu()) * torch.exp(-(Dyy / sigma0[ii].cpu()) - (Dyy_org / sigma[ii].cpu())) + epsilon[ii].cpu() * torch.exp(-Dyy_org / sigma[ii].cpu())
+            Kxy = (1.0-epsilon[ii].cpu()) * torch.exp(-(Dxy / sigma0[ii].cpu()) - (Dxy_org / sigma[ii].cpu())) + epsilon[ii].cpu() * torch.exp(-Dxy_org / sigma[ii].cpu())
         else:
-            Kx = torch.exp(-Dxx / sigma0[ii])
-            Ky = torch.exp(-Dyy / sigma0[ii])
-            Kxy = torch.exp(-Dxy / sigma0[ii])
+            Kx = torch.exp(-Dxx / sigma0[ii].cpu())
+            Ky = torch.exp(-Dyy / sigma0[ii].cpu())
+            Kxy = torch.exp(-Dxy / sigma0[ii].cpu())
         KKx[ii]=Kx
         KKy[ii]=Ky
         KKxy[ii]=Kxy
+    print("outside mmdg",mem_ratio())    
     return h1_mean_var_gram_multi(KKx, KKy, KKxy, is_var_computed, use_1sample_U,gamma)
 
 def MMDu_multi(weights, Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=True, is_var_computed=True, use_1sample_U=True,gamma=2):
@@ -304,7 +340,7 @@ def MMDu_multi(weights, Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=T
             Ky_all = Ky_all + weights[ii] * Ky
             Kxy_all = Kxy_all + weights[ii] * Kxy
 
-    return h1_mean_var_gram(Kx_all, Ky_all, Kxy_all, is_var_computed, use_1sample_U,gamma)
+    return h1_mean_var_gram_multi(Kx_all, Ky_all, Kxy_all, is_var_computed, use_1sample_U,gamma)
 
 def MMDu_linear_kernel(Fea, len_s, is_var_computed=True, use_1sample_U=True,gamma=2):
     """compute value of (deep) lineaer-kernel MMD and std of (deep) lineaer-kernel MMD using merged data."""
@@ -387,6 +423,22 @@ def TST_MMD_adaptive_bandwidth(Fea, N_per, N1, Fea_org, sigma, sigma0, alpha, de
         threshold = S_mmd_vector[np.int(np.ceil(N_per * (1 - alpha)))]
     return h, threshold, mmd_value.item()
 
+def Analytic_Weights(mmd, V):
+    l = mmd.shape[0]
+    epsilon=1e-5
+    I = torch.eye(l,dtype=dtype, device = device)
+    V = V.to(I)
+    mmd = mmd.to(I)
+    L = torch.linalg.cholesky(V+epsilon*I)
+    beta = torch.cholesky_solve(mmd.reshape(-1,1), L)
+    return beta.to(I)
+
+def get_Analytic_Weights(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, device, dtype, gamma=2, is_smooth=True):
+    TEMP = MMDg(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, device, dtype, gamma=gamma)
+    weights = Analytic_Weights(TEMP[0], TEMP[1])
+    return weights
+    # return TEMP
+
 def TST_MMD_u(Fea, N_per, N1, Fea_org, sigma, sigma0, epsilon, alpha, device, dtype, gamma=2, is_smooth=True):
     """run two-sample test (TST) using deep kernel kernel."""
     TEMP = MMDu(Fea, N1, Fea_org, sigma, sigma0, epsilon,is_smooth,gamma)
@@ -402,10 +454,12 @@ def TST_MMD_u(Fea, N_per, N1, Fea_org, sigma, sigma0, epsilon, alpha, device, dt
     threshold = "NaN"
     return h,threshold,mmd_value_nn
 
-def TST_MMD_Multi(weights, Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, is_smooth=True):
+def TST_MMD_Multi(weights, Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=2, is_smooth=True):
     """run two-sample test (TST) using deep kernel kernel."""
-    TEMP = MMDu_multi(weights, Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep)
-    Kxyxy = TEMP[2]
+    TEMP = MMDu_multi(weights, Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, gamma=gamma)
+    Kxyxy = TEMP[2].to(device)
+    s = Kxyxy.shape[1]
+    Kxyxy = Kxyxy.reshape(s,s)
     nx = N1
     mmd_value_nn, p_val, rest = mmd2_permutations(Kxyxy, nx, permutations=200)
     if p_val > alpha:
@@ -414,6 +468,30 @@ def TST_MMD_Multi(weights, Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_e
         h = 1
     threshold = "NaN"
     return h,threshold,mmd_value_nn
+
+def TST_Wald(weights, Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=2, is_smooth=True):
+    TEMP = MMDu_multi(weights, Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, gamma)
+    t_obs = np.sqrt(TEMP[0])    
+    threshold = chi.ppf(q=1-alpha, df=d)
+    if t_obs > threshold:
+        h = 1
+    else:
+        h = 0
+    threshold = "NaN"
+    return h,threshold,mmd_value_nn
+
+# def TST_MMD_General(Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=2, is_smooth=True):
+#     """run two-sample test (TST) using deep kernel kernel."""
+#     TEMP = MMDg(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep)
+#     Kxyxy = TEMP[2]
+#     nx = N1
+#     mmd_value_nn, p_val, rest = mmd2_permutations(Kxyxy, nx, permutations=200)
+#     if p_val > alpha:
+#         h = 0
+#     else:
+#         h = 1
+#     threshold = "NaN"
+#     return h,threshold,mmd_value_nn
 
 def TST_MMD_u_linear_kernel(Fea, N_per, N1, alpha, device, dtype):
     """run two-sample test (TST) using (deep) lineaer kernel kernel."""
