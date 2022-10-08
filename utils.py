@@ -17,7 +17,7 @@ class ModelLatentF(torch.nn.Module):
         self.latent = torch.nn.Sequential(
             torch.nn.Linear(x_in, H, bias=True),
             torch.nn.Softplus(),
-            torch.nn.Linear(H, H, bias=True),
+            torch.nn.Linear(H, H, bixas=True),
             torch.nn.Softplus(),
             torch.nn.Linear(H, H, bias=True),
             torch.nn.Softplus(),
@@ -176,16 +176,16 @@ def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gam
     num_kernels = Kx.shape[0]
     p = n*(n-1)
     pr=n**2
-    W = get_weights(n, gamma).to(Kx)
+    W = get_weights(n, gamma)
     # print(torch.sum(W))
-    H = torch.zeros(num_kernels, n, n).to(Kx)
+    H = torch.zeros(num_kernels, n, n)
     # import IPython; IPython.embed()
-    H_bar = torch.zeros(num_kernels, n, n).to(Kx)
-    one = torch.ones(n).to(Kx)
-    means = torch.zeros(num_kernels, n).to(Kx)
+    H_bar = torch.zeros(num_kernels, n, n)
+    one = torch.ones(n)
+    means = torch.zeros(num_kernels, n)
     #gram are kx,ky,kxy
-    mmd = torch.zeros(num_kernels).to(Kx)
-    KKxyxy = torch.zeros(num_kernels,2*n,2*n).to(Kx)
+    mmd = torch.zeros(num_kernels)
+    KKxyxy = torch.zeros(num_kernels,2*n,2*n)
     print("inside gram", mem_ratio())
     for u in range(num_kernels):
         print("loop gram", u, mem_ratio())
@@ -196,7 +196,7 @@ def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gam
         Kxxy = torch.cat((Kx_bar,Kxy_bar),1)
         Kyxy = torch.cat((Kyx_bar,Ky_bar),1)
         Kxyxy = torch.cat((Kxxy,Kyxy),0)
-        KKxyxy[u] = Kxyxy.cpu()
+        KKxyxy[u] = Kxyxy
         H[u]=hh = Kx[u]+Ky[u]-Kxy[u]-Kxy[u].transpose(0,1)
         H[u].fill_diagonal_(0)
         H_bar[u] = Kx_bar + Ky_bar - Kxy_bar - Kyx_bar
@@ -272,9 +272,9 @@ def MMDg(Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=True, is_var_com
     # Y = Fea[len_s:, :] # fetch the sample 2 (features of deep networks)
     X_org = Fea_org[0:len_s, :] # fetch the original sample 1
     Y_org = Fea_org[len_s:, :] # fetch the original sample 2
-    Dxx_org = Pdist2(X_org, X_org).cpu()
-    Dyy_org = Pdist2(Y_org, Y_org).cpu()
-    Dxy_org = Pdist2(X_org, Y_org).cpu()
+    Dxx_org = Pdist2(X_org, X_org)
+    Dyy_org = Pdist2(Y_org, Y_org)
+    Dxy_org = Pdist2(X_org, Y_org)
     L = 1 # generalized Gaussian (if L>1)
     # Dxx = Pdist2(X, X)
     # Dyy = Pdist2(Y, Y)
@@ -289,18 +289,18 @@ def MMDg(Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=True, is_var_com
         print("loop mmdg", ii, mem_ratio())
         X = Fea[ii][0:len_s, :]  # fetch the sample 1 (features of deep networks)
         Y = Fea[ii][len_s:, :]  # fetch the sample 2 (features of deep networks)
-        Dxx = Pdist2(X, X).cpu()
-        Dyy = Pdist2(Y, Y).cpu()
-        Dxy = Pdist2(X, Y).cpu()
+        Dxx = Pdist2(X, X)
+        Dyy = Pdist2(Y, Y)
+        Dxy = Pdist2(X, Y)
 
         if is_smooth:
-            Kx = (1.0-epsilon[ii].cpu()) * torch.exp(-(Dxx / sigma0[ii].cpu()) - (Dxx_org / sigma[ii].cpu())) + epsilon[ii].cpu() * torch.exp(-Dxx_org / sigma[ii].cpu())
-            Ky = (1.0-epsilon[ii].cpu()) * torch.exp(-(Dyy / sigma0[ii].cpu()) - (Dyy_org / sigma[ii].cpu())) + epsilon[ii].cpu() * torch.exp(-Dyy_org / sigma[ii].cpu())
-            Kxy = (1.0-epsilon[ii].cpu()) * torch.exp(-(Dxy / sigma0[ii].cpu()) - (Dxy_org / sigma[ii].cpu())) + epsilon[ii].cpu() * torch.exp(-Dxy_org / sigma[ii].cpu())
+            Kx = (1.0-epsilon[ii]) * torch.exp(-(Dxx / sigma0[ii]) - (Dxx_org / sigma[ii])) + epsilon[ii] * torch.exp(-Dxx_org / sigma[ii])
+            Ky = (1.0-epsilon[ii]) * torch.exp(-(Dyy / sigma0[ii]) - (Dyy_org / sigma[ii])) + epsilon[ii] * torch.exp(-Dyy_org / sigma[ii])
+            Kxy = (1.0-epsilon[ii]) * torch.exp(-(Dxy / sigma0[ii]) - (Dxy_org / sigma[ii])) + epsilon[ii] * torch.exp(-Dxy_org / sigma[ii])
         else:
-            Kx = torch.exp(-Dxx / sigma0[ii].cpu())
-            Ky = torch.exp(-Dyy / sigma0[ii].cpu())
-            Kxy = torch.exp(-Dxy / sigma0[ii].cpu())
+            Kx = torch.exp(-Dxx / sigma0[ii])
+            Ky = torch.exp(-Dyy / sigma0[ii])
+            Kxy = torch.exp(-Dxy / sigma0[ii])
         KKx[ii]=Kx
         KKy[ii]=Ky
         KKxy[ii]=Kxy
