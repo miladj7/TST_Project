@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.utils.data
 from scipy.stats import chi
+import gc
 
 is_cuda = True
 dtype = torch.float
@@ -176,10 +177,9 @@ def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gam
     num_kernels = Kx.shape[0]
     p = n*(n-1)
     pr=n**2
-    W = get_weights(n, gamma)
+    W = get_weights(n, gamma).to(Kx)
     # print(torch.sum(W))
     H = torch.zeros(num_kernels, n, n)
-    # import IPython; IPython.embed()
     H_bar = torch.zeros(num_kernels, n, n)
     one = torch.ones(n)
     means = torch.zeros(num_kernels, n)
@@ -187,6 +187,8 @@ def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gam
     mmd = torch.zeros(num_kernels)
     KKxyxy = torch.zeros(num_kernels,2*n,2*n)
     print("inside gram", mem_ratio())
+    
+    # prints currently alive Tensors and Variables
     for u in range(num_kernels):
         print("loop gram", u, mem_ratio())
         Kx_bar = Kx[u]*W
