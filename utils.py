@@ -3,6 +3,7 @@ import torch
 import torch.utils.data
 from scipy.stats import chi
 import gc
+from ost import *
 
 is_cuda = True
 dtype = torch.float
@@ -141,6 +142,7 @@ def get_weights(n, gamma):
         n2 = int(n / 2)
         N = torch.zeros(n, n, dtype=dtype)
         N[np.arange(n2), np.arange(n2) + n2] += 1
+        # N[n2+np.arange(n2), np.arange(n2)] += 1
     else:
         l = get_l(n,gamma)
         D = get_pairs(n)
@@ -164,6 +166,35 @@ def get_coeff(n, gamma):
         return 4./n, 2./(n**2)
     else:
         return A/l,1./l
+    
+def preprocessing(tau, Sigma, max_condition=1e-6):
+    """
+    Check if Sigma is singular and remove redundant features
+    :param tau:
+    :param Sigma:
+    :param max_condition: determines at which threshold eigenvalues are considered as 0
+    :return:
+    """
+
+    # First redefine features such that all have unit variance
+    stds = torch.sqrt(torch.diag(Sigma))
+    tau = torch.divide(tau, stds)
+    normalization = torch.outer(stds, stds)
+    Sigma = torch.divide(Sigma, normalization)
+
+    # compute eigendecomposition
+    (w, v) = torch.linalg.eigh(Sigma)
+    w_max = w[-1]
+    threshold = max_condition * w_max
+    #do w>threshold and use numpy
+    min_index = np.min([i for i in range(len(w)) if w[i] > threshold])
+    if min_index > 0:
+        Sigma_new = v[:, min_index:].T @ Sigma @ v[:, min_index:]
+        tau_new = v[:, min_index:].T @ tau
+        return tau_new, Sigma_new
+    else:
+        return tau, Sigma
+
 
 #returns an n*n matrix which is the indicator of selected pairs devided by number of pairs
 # no of pairs is [(n**gamma-n(gamma-1))/2]
@@ -171,6 +202,7 @@ def get_coeff(n, gamma):
 def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gamma=2):
     """compute value of MMD and std of MMD using kernel matrix."""
     n = Kx.shape[1]
+    Kx_test = Kx
     Kx = Kx.reshape(-1,n,n)
     Ky = Ky.reshape(-1,n,n)
     Kxy = Kxy.reshape(-1,n,n)
@@ -186,11 +218,11 @@ def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gam
     #gram are kx,ky,kxy
     mmd = torch.zeros(num_kernels)
     KKxyxy = torch.zeros(num_kernels,2*n,2*n)
-    print("inside gram", mem_ratio())
+    # print("inside gram", mem_ratio())
     
     # prints currently alive Tensors and Variables
     for u in range(num_kernels):
-        print("loop gram", u, mem_ratio())
+        # print("loop gram", u, mem_ratio())
         Kx_bar = Kx[u]*W
         Ky_bar = Ky[u]*W
         Kxy_bar = Kxy[u]*W
@@ -225,7 +257,7 @@ def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gam
         # xy = torch.div(torch.sum(Kxy[u]), (pr))
         # mmd[u] = xx - 2 * xy + yy
         # mmd_c
-    print("outside gram", mem_ratio())
+    # print("outside gram", mem_ratio())
     mmd = torch.sum(H_bar,(1,2))
     mmd_c = torch.sum(H, (1,2))/p
     means = torch.sum(H,2)/n    
@@ -239,8 +271,12 @@ def h1_mean_var_gram_multi(Kx, Ky, Kxy, is_var_computed, use_1sample_U=True, gam
     # 100 x 200 x 200 
     A,B = get_coeff(n, gamma)
     V = A*S1+B*S2
+    l = get_l(n,gamma)
+    mmd = np.sqrt(l)*mmd
+    V = l*V
     # if  varEst == 0.0:
     #     print('error!!'+str(V1))
+    # import IPython; IPython.embed()
     return mmd, V, KKxyxy
 
 
@@ -283,12 +319,10 @@ def MMDg(Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=True, is_var_com
     # Dxy = Pdist2(X, Y)
     # print(num_kernels)
     # print(len_s)
-    KKx=torch.zeros(num_kernels,len_s,len_s,dtype=dtype, device = 'cpu')
-    KKy=torch.zeros(num_kernels,len_s,len_s,dtype=dtype,device = 'cpu')
-    KKxy=torch.zeros(num_kernels,len_s,len_s,dtype=dtype,device = 'cpu')
-    print("inside mmdg", mem_ratio())
+    KKx=torch.zeros(num_kernels,len_s,len_s,dtype=dtype, device = device)
+    KKy=torch.zeros(num_kernels,len_s,len_s,dtype=dtype,device = device)
+    KKxy=torch.zeros(num_kernels,len_s,len_s,dtype=dtype,device = device)
     for ii in range(num_kernels):
-        print("loop mmdg", ii, mem_ratio())
         X = Fea[ii][0:len_s, :]  # fetch the sample 1 (features of deep networks)
         Y = Fea[ii][len_s:, :]  # fetch the sample 2 (features of deep networks)
         Dxx = Pdist2(X, X)
@@ -305,8 +339,7 @@ def MMDg(Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=True, is_var_com
             Kxy = torch.exp(-Dxy / sigma0[ii])
         KKx[ii]=Kx
         KKy[ii]=Ky
-        KKxy[ii]=Kxy
-    print("outside mmdg",mem_ratio())    
+        KKxy[ii]=Kxy   
     return h1_mean_var_gram_multi(KKx, KKy, KKxy, is_var_computed, use_1sample_U,gamma)
 
 def MMDu_multi(weights, Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=True, is_var_computed=True, use_1sample_U=True,gamma=2):
@@ -426,18 +459,19 @@ def TST_MMD_adaptive_bandwidth(Fea, N_per, N1, Fea_org, sigma, sigma0, alpha, de
     return h, threshold, mmd_value.item()
 
 def Analytic_Weights(mmd, V):
+    mmd, V = preprocessing(mmd,V)
     l = mmd.shape[0]
-    epsilon=1e-5
+    epsilon=1e-10
     I = torch.eye(l,dtype=dtype, device = device)
     V = V.to(I)
     mmd = mmd.to(I)
     L = torch.linalg.cholesky(V+epsilon*I)
     beta = torch.cholesky_solve(mmd.reshape(-1,1), L)
-    return beta.to(I)
+    return beta.to(I), mmd, V
 
 def get_Analytic_Weights(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, device, dtype, gamma=2, is_smooth=True):
     TEMP = MMDg(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, device, dtype, gamma=gamma)
-    weights = Analytic_Weights(TEMP[0], TEMP[1])
+    weights,_,_ = Analytic_Weights(TEMP[0], TEMP[1])
     return weights
     # return TEMP
 
@@ -471,16 +505,38 @@ def TST_MMD_Multi(weights, Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_e
     threshold = "NaN"
     return h,threshold,mmd_value_nn
 
-def TST_Wald(weights, Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=2, is_smooth=True):
-    TEMP = MMDu_multi(weights, Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, gamma)
-    t_obs = np.sqrt(TEMP[0])    
+# def TST_Wald(weights, Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=2, is_smooth=True):
+#     TEMP = MMDu_multi(weights, Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, gamma)
+#     t_obs = np.sqrt(TEMP[0])    
+#     threshold = chi.ppf(q=1-alpha, df=d)
+#     if t_obs > threshold:
+#         h = 1
+#     else:
+#         h = 0
+#     threshold = "NaN"
+#     return h,threshold,mmd_value_nn
+
+def TST_Wald(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=2, is_smooth=True):
+    mmd, V, _ = MMDg(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=gamma)
+    weights, mmd, _ = Analytic_Weights(mmd, V)
+    t_obs = torch.sqrt(weights.to(mmd).reshape(-1).dot(mmd)) 
+    d = len(mmd)
     threshold = chi.ppf(q=1-alpha, df=d)
     if t_obs > threshold:
         h = 1
     else:
         h = 0
+    return h,threshold,mmd
+
+def TST_Ost(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=2, is_smooth=True):
+    mmd, V, _ = MMDg(Fea, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=gamma)
+    mmd = mmd.cpu().detach().numpy()
+    V = V.cpu().detach().numpy()
+    # weights, mmd, _ = Analytic_Weights(mmd, V)
+    # t_obs = torch.sqrt(weights.to(mmd).reshape(-1).dot(mmd)) 
+    h = ost_test(mmd,V)
     threshold = "NaN"
-    return h,threshold,mmd_value_nn
+    return h,threshold,mmd
 
 # def TST_MMD_General(Fea, N_per, N1, Fea_org, all_sigma, all_sigma0, all_ep, alpha, device, dtype, gamma=2, is_smooth=True):
 #     """run two-sample test (TST) using deep kernel kernel."""
