@@ -6,7 +6,7 @@ import gc
 from ost import *
 
 is_cuda = True
-dtype = torch.float
+dtype = torch.double
 device = torch.device("cuda:0")
 #i don't know what it does
 class ModelLatentF(torch.nn.Module):
@@ -49,12 +49,17 @@ def MatConvert(x, device, dtype):
 
 def Pdist2(x, y):
     """compute the paired distance between x and y."""
+    if len(x.shape) > 2:
+        x = x.view(x.shape[0], -1)
+    if len(y.shape) > 2:
+        y = y.view(y.shape[0], -1)
     x_norm = (x ** 2).sum(1).view(-1, 1)
     if y is not None:
         y_norm = (y ** 2).sum(1).view(1, -1)
     else:
         y = x
         y_norm = x_norm.view(1, -1)
+    # import IPython; IPython.embed()
     Pdist = x_norm + y_norm - 2.0 * torch.mm(x, torch.transpose(y, 0, 1))
     Pdist[Pdist<0]=0
     return Pdist
@@ -310,6 +315,7 @@ def MMDg(Fea, len_s, Fea_org, sigma, sigma0, epsilon, is_smooth=True, is_var_com
     # Y = Fea[len_s:, :] # fetch the sample 2 (features of deep networks)
     X_org = Fea_org[0:len_s, :] # fetch the original sample 1
     Y_org = Fea_org[len_s:, :] # fetch the original sample 2
+    # import IPython; IPython.embed()
     Dxx_org = Pdist2(X_org, X_org)
     Dyy_org = Pdist2(Y_org, Y_org)
     Dxy_org = Pdist2(X_org, Y_org)
